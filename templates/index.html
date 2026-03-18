@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>MyWorkTable</title>
+    <link rel="icon" type="image/svg+xml" href="/assets/icon.svg">
+    <link rel="manifest" href="/assets/manifest.json">
+    <meta name="theme-color" content="#111827">
+    <link rel="stylesheet" href="/assets/tailwind.css">
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <script src="https://unpkg.com/htmx-ext-sse@2.2.2/sse.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+</head>
+<body class="bg-gray-900 font-sans">
+    <div class="flex flex-col h-screen overflow-y-auto p-5"
+         hx-ext="sse" sse-connect="/api/events">
+
+        <div id="cards"
+             hx-get="/html/cards" hx-trigger="load, sse:cards" hx-swap="innerHTML">
+        </div>
+    </div>
+
+    <script>
+        // Zoom: load saved level, Ctrl+/- to change, persist
+        let zoomLevel = 1.0;
+        fetch('/api/settings/zoom_level')
+            .then(r => r.json())
+            .then(data => {
+                if (data.value) {
+                    zoomLevel = parseFloat(data.value);
+                    document.body.style.zoom = zoomLevel;
+                }
+            })
+            .catch(() => {});
+
+        document.addEventListener('keydown', function(e) {
+            if (e.ctrlKey) {
+                let changed = false;
+                if (e.key === '=' || e.key === '+') {
+                    e.preventDefault();
+                    zoomLevel = Math.min(zoomLevel + 0.1, 3.0);
+                    changed = true;
+                } else if (e.key === '-') {
+                    e.preventDefault();
+                    zoomLevel = Math.max(zoomLevel - 0.1, 0.5);
+                    changed = true;
+                } else if (e.key === '0') {
+                    e.preventDefault();
+                    zoomLevel = 1.0;
+                    changed = true;
+                }
+                if (changed) {
+                    document.body.style.zoom = zoomLevel;
+                    fetch('/api/settings/zoom_level', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({value: zoomLevel.toFixed(1)})
+                    });
+                }
+            }
+        });
+
+        // Render markdown in .markdown-render elements after HTMX swap
+        function renderMarkdown() {
+            document.querySelectorAll('.markdown-render').forEach(el => {
+                const raw = el.getAttribute('data-md');
+                if (raw) {
+                    el.innerHTML = marked.parse(raw);
+                }
+            });
+        }
+        document.addEventListener('htmx:afterSwap', renderMarkdown);
+        document.addEventListener('DOMContentLoaded', renderMarkdown);
+
+        // Drag-during-SSE guard: suppress HTMX swaps while dragging
+        let isDragging = false;
+        document.addEventListener('htmx:beforeSwap', function(e) {
+            if (isDragging) {
+                e.preventDefault();
+                e.detail.shouldSwap = false;
+            }
+        });
+
+        // Init Sortable.js on all card-children containers
+        function initSortable() {
+            document.querySelectorAll('.card-children').forEach(el => {
+                if (el._sortable) return;
+                el._sortable = new Sortable(el, {
+                    group: 'cards',
+                    handle: '.drag-handle',
+                    animation: 150,
+                    ghostClass: 'opacity-30',
+                    fallbackOnBody: true,
+                    swapThreshold: 0.65,
+                    emptyInsertThreshold: 8,
+                    draggable: '.card-item',
+                    onStart: function() { isDragging = true; },
+                    onEnd: function(evt) {
+                        isDragging = false;
+                        const cardId = evt.item.getAttribute('data-card-id');
+                        const targetParent = evt.to.getAttribute('data-parent');
+                        const newParent = targetParent === 'root' ? null : targetParent;
+                        const siblingOrder = Array.from(evt.to.children)
+                            .map(el => el.getAttribute('data-card-id'))
+                            .filter(Boolean);
+
+                        fetch('/api/cards/move', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({
+                                card_id: cardId,
+                                new_parent: newParent,
+                                sibling_order: siblingOrder
+                            })
+                        });
+                    }
+                });
+            });
+        }
+        document.addEventListener('htmx:afterSwap', initSortable);
+        document.addEventListener('DOMContentLoaded', initSortable);
+
+        // Clear all: two-click confirm
+        function handleClearAll(btn) {
+            if (btn.dataset.confirmed === 'true') {
+                btn.dataset.confirmed = 'false';
+                btn.textContent = 'Clear all';
+                btn.classList.remove('bg-red-600', 'border-red-500', 'text-white');
+                btn.classList.add('bg-gray-700', 'border-gray-600', 'text-gray-300');
+                fetch('/api/database', { method: 'DELETE' });
+                return;
+            }
+            btn.dataset.confirmed = 'true';
+            btn.textContent = 'Confirm?';
+            btn.classList.remove('bg-gray-700', 'border-gray-600', 'text-gray-300');
+            btn.classList.add('bg-red-600', 'border-red-500', 'text-white');
+            setTimeout(() => {
+                if (btn.dataset.confirmed === 'true') {
+                    btn.dataset.confirmed = 'false';
+                    btn.textContent = 'Clear all';
+                    btn.classList.remove('bg-red-600', 'border-red-500', 'text-white');
+                    btn.classList.add('bg-gray-700', 'border-gray-600', 'text-gray-300');
+                }
+            }, 3000);
+        }
+
+        // Add todo on Enter
+        document.addEventListener('keypress', function(e) {
+            if (e.target.id === 'new-todo-input' && e.key === 'Enter') {
+                e.preventDefault();
+                const text = e.target.value.trim();
+                if (text) {
+                    fetch('/api/todos', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({text: text})
+                    }).then(() => {
+                        e.target.value = '';
+                    });
+                }
+            }
+        });
+    </script>
+</body>
+</html>

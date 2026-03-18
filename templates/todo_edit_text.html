@@ -1,0 +1,7 @@
+<form hx-post="/api/todos/{{ id }}/update" hx-swap="none" hx-trigger="submit">
+    <input type="text" name="text" value="{{ text }}"
+           class="w-full bg-gray-50 border border-gray-300 rounded px-2 py-0.5 text-sm text-gray-800 focus:outline-none focus:border-blue-400"
+           autofocus
+           onkeydown="if(event.key==='Escape'){htmx.ajax('GET','/html/cards',{target:'#cards',swap:'innerHTML'})}"
+           onblur="this.form.requestSubmit()">
+</form>

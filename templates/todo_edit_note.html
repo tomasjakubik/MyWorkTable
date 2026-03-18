@@ -1,0 +1,8 @@
+<form hx-post="/api/todos/{{ id }}/update" hx-swap="none" hx-trigger="submit" class="mt-1">
+    <textarea name="note"
+              class="w-full bg-gray-50 border border-gray-200 rounded-lg px-2 py-1.5 text-sm text-gray-700 placeholder-gray-400 focus:outline-none focus:border-blue-400 resize-y min-h-[60px] transition-colors"
+              placeholder="Add a note (markdown supported)..."
+              autofocus
+              onkeydown="if(event.ctrlKey&&event.key==='Enter'){this.form.requestSubmit()}else if(event.key==='Escape'){htmx.ajax('GET','/html/cards',{target:'#cards',swap:'innerHTML'})}"
+              onblur="this.form.requestSubmit()">{{ note }}</textarea>
+</form>
