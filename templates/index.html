@@ -84,10 +84,13 @@
         });
 
         // Init Sortable.js on all card-children containers
+        let activeSortables = [];
         function initSortable() {
+            // Destroy previous instances to prevent leaked event listeners
+            activeSortables.forEach(s => s.destroy());
+            activeSortables = [];
             document.querySelectorAll('.card-children').forEach(el => {
-                if (el._sortable) return;
-                el._sortable = new Sortable(el, {
+                const s = new Sortable(el, {
                     group: 'cards',
                     handle: '.drag-handle',
                     animation: 150,
@@ -117,6 +120,7 @@
                         });
                     }
                 });
+                activeSortables.push(s);
             });
         }
         document.addEventListener('htmx:afterSwap', initSortable);
