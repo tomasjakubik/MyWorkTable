@@ -483,26 +483,23 @@ async fn handle_hook(
         "active"
     };
 
+    // Only SessionStart and UserPromptSubmit create new sessions.
+    // All other events only update existing ones, so we don't get ghost
+    // sessions from events that fire during VSCode startup/shutdown.
+    let creates_session = event_type == "SessionStart" || event_type == "UserPromptSubmit";
+
     if status == "ended" {
         sqlx::query(
-            "INSERT INTO sessions (id, cwd, model, status, started_at, last_event_at, ended_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)
-             ON CONFLICT(id) DO UPDATE SET last_event_at = ?, status = ?, ended_at = ?",
+            "UPDATE sessions SET last_event_at = ?, status = ?, ended_at = ? WHERE id = ?",
         )
+        .bind(&now)
+        .bind(status)
+        .bind(&now)
         .bind(&session_id)
-        .bind(&cwd)
-        .bind(&model)
-        .bind(status)
-        .bind(&now)
-        .bind(&now)
-        .bind(&now)
-        .bind(&now)
-        .bind(status)
-        .bind(&now)
         .execute(&state.db)
         .await
         .ok();
-    } else {
+    } else if creates_session {
         sqlx::query(
             "INSERT INTO sessions (id, cwd, model, status, started_at, last_event_at)
              VALUES (?, ?, ?, ?, ?, ?)
@@ -516,6 +513,16 @@ async fn handle_hook(
         .bind(&now)
         .bind(&now)
         .bind(status)
+        .execute(&state.db)
+        .await
+        .ok();
+    } else {
+        sqlx::query(
+            "UPDATE sessions SET last_event_at = ?, status = ? WHERE id = ?",
+        )
+        .bind(&now)
+        .bind(status)
+        .bind(&session_id)
         .execute(&state.db)
         .await
         .ok();
