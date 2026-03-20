@@ -1,14 +1,16 @@
 use askama::Template;
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{ConnectInfo, Path, State},
     http::StatusCode,
+    middleware,
     response::{
         Html, IntoResponse,
         sse::{Event, KeepAlive, Sse},
     },
     routing::{delete, get, post},
 };
+use std::net::SocketAddr;
 use futures::stream::Stream;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -21,6 +23,29 @@ use crate::db;
 use crate::models::{CardId, Session, Todo, build_card_tree};
 use crate::state::{AppEvent, AppState};
 use crate::time::relative_time;
+
+/// Only allow connections from loopback and Docker/private subnets.
+async fn require_local(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    request: axum::extract::Request,
+    next: middleware::Next,
+) -> impl IntoResponse {
+    let ip = addr.ip();
+    let allowed = ip.is_loopback()
+        || match ip {
+            std::net::IpAddr::V4(v4) => {
+                let octets = v4.octets();
+                // 172.16.0.0/12 — Docker bridge/custom networks
+                octets[0] == 172 && (octets[1] & 0xF0) == 16
+            }
+            std::net::IpAddr::V6(_) => false,
+        };
+    if allowed {
+        next.run(request).await.into_response()
+    } else {
+        StatusCode::FORBIDDEN.into_response()
+    }
+}
 
 pub fn router(state: AppState) -> Router {
     Router::new()
@@ -48,6 +73,7 @@ pub fn router(state: AppState) -> Router {
         // Static files
         .nest_service("/assets", ServeDir::new("assets"))
         .layer(CorsLayer::permissive())
+        .layer(middleware::from_fn(require_local))
         .with_state(state)
 }
 
