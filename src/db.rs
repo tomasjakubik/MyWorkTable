@@ -37,6 +37,15 @@ pub async fn init_db() -> SqlitePool {
         }
     }
 
+    // Run incremental migrations (ALTER TABLE fails silently if already applied)
+    let migration_002 = include_str!("../migrations/002_waiting_tool.sql");
+    for statement in migration_002.split(';') {
+        let trimmed = statement.trim();
+        if !trimmed.is_empty() {
+            sqlx::query(trimmed).execute(&pool).await.ok();
+        }
+    }
+
     pool
 }
 
