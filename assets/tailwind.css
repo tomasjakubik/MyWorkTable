@@ -15,10 +15,10 @@
     --color-green-500: oklch(72.3% 0.219 149.579);
     --color-green-700: oklch(52.7% 0.154 150.069);
     --color-green-900: oklch(39.3% 0.095 152.535);
-    --color-purple-50: oklch(97.7% 0.014 308.299);
-    --color-purple-200: oklch(90.2% 0.063 306.703);
-    --color-purple-700: oklch(49.6% 0.215 292.581);
-    --color-purple-900: oklch(37.9% 0.146 292.581);
+    --color-amber-50: oklch(98.7% 0.022 95.277);
+    --color-amber-200: oklch(92.4% 0.12 95.746);
+    --color-amber-700: oklch(55.5% 0.163 48.998);
+    --color-amber-900: oklch(45.6% 0.118 52.934);
     --color-blue-50: oklch(97% 0.014 254.604);
     --color-blue-200: oklch(88.2% 0.059 254.128);
     --color-blue-400: oklch(70.7% 0.165 254.624);
@@ -373,8 +373,8 @@
     border-style: var(--tw-border-style);
     border-width: 1px;
   }
-  .border-purple-200 {
-    border-color: var(--color-purple-200);
+  .border-amber-200 {
+    border-color: var(--color-amber-200);
   }
   .border-blue-200 {
     border-color: var(--color-blue-200);
@@ -397,11 +397,11 @@
   .border-green-500 {
     border-color: var(--color-green-500);
   }
-  .bg-purple-50 {
-    background-color: var(--color-purple-50);
+  .bg-amber-50 {
+    background-color: var(--color-amber-50);
   }
-  .bg-purple-200 {
-    background-color: var(--color-purple-200);
+  .bg-amber-200 {
+    background-color: var(--color-amber-200);
   }
   .bg-blue-50 {
     background-color: var(--color-blue-50);
@@ -511,11 +511,11 @@
   .whitespace-nowrap {
     white-space: nowrap;
   }
-  .text-purple-700 {
-    color: var(--color-purple-700);
+  .text-amber-700 {
+    color: var(--color-amber-700);
   }
-  .text-purple-900 {
-    color: var(--color-purple-900);
+  .text-amber-900 {
+    color: var(--color-amber-900);
   }
   .text-blue-700 {
     color: var(--color-blue-700);
