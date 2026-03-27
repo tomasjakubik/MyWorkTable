@@ -15,6 +15,7 @@ pub struct Session {
     pub parent_type: Option<String>,
     pub parent_id: Option<String>,
     pub sort_order: i64,
+    pub waiting_tool: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]

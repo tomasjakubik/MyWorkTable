@@ -109,7 +109,7 @@ struct SessionView {
     last_event_at: String,
     card_class: &'static str,
     badge_class: &'static str,
-    status_label: &'static str,
+    status_label: String,
     dir_name: String,
     rel_time: String,
 }
@@ -118,24 +118,30 @@ impl From<Session> for SessionView {
     fn from(s: Session) -> Self {
         let (card_class, badge_class, status_label) = match s.status.as_str() {
             "active" => (
-                "bg-purple-50 border-purple-200 text-purple-900",
-                "bg-purple-200 text-purple-700",
-                "working",
+                "bg-amber-50 border-amber-200 text-amber-900",
+                "bg-amber-200 text-amber-700",
+                "working".to_string(),
             ),
-            "waiting" => (
-                "bg-blue-50 border-blue-200 text-blue-900",
-                "bg-blue-200 text-blue-700",
-                "waiting for approval",
-            ),
+            "waiting" => {
+                let label = match &s.waiting_tool {
+                    Some(tool) if !tool.is_empty() => format!("approve {tool}"),
+                    _ => "waiting for approval".to_string(),
+                };
+                (
+                    "bg-blue-50 border-blue-200 text-blue-900",
+                    "bg-blue-200 text-blue-700",
+                    label,
+                )
+            }
             "ended" => (
                 "bg-green-50 border-green-200 text-green-900",
                 "bg-green-200 text-green-700",
-                "ended",
+                "ended".to_string(),
             ),
             _ => (
                 "bg-gray-50 border-gray-200 text-gray-700",
                 "bg-gray-200 text-gray-600",
-                "unknown",
+                "unknown".to_string(),
             ),
         };
         let dir_name = s.cwd.rsplit('/').next().unwrap_or(&s.cwd).to_string();
@@ -509,6 +515,14 @@ async fn handle_hook(
         "active"
     };
 
+    // On PermissionRequest, record which tool is waiting for approval.
+    // On any other event, clear it.
+    let waiting_tool: Option<&str> = if status == "waiting" {
+        payload.tool_name.as_deref()
+    } else {
+        None
+    };
+
     // Only SessionStart and UserPromptSubmit create new sessions.
     // All other events only update existing ones, so we don't get ghost
     // sessions from events that fire during VSCode startup/shutdown.
@@ -516,7 +530,7 @@ async fn handle_hook(
 
     if status == "ended" {
         sqlx::query(
-            "UPDATE sessions SET last_event_at = ?, status = ?, ended_at = ? WHERE id = ?",
+            "UPDATE sessions SET last_event_at = ?, status = ?, ended_at = ?, waiting_tool = NULL WHERE id = ?",
         )
         .bind(&now)
         .bind(status)
@@ -529,7 +543,7 @@ async fn handle_hook(
         sqlx::query(
             "INSERT INTO sessions (id, cwd, model, status, started_at, last_event_at)
              VALUES (?, ?, ?, ?, ?, ?)
-             ON CONFLICT(id) DO UPDATE SET last_event_at = ?, status = ?",
+             ON CONFLICT(id) DO UPDATE SET last_event_at = ?, status = ?, waiting_tool = ?",
         )
         .bind(&session_id)
         .bind(&cwd)
@@ -539,15 +553,17 @@ async fn handle_hook(
         .bind(&now)
         .bind(&now)
         .bind(status)
+        .bind(waiting_tool)
         .execute(&state.db)
         .await
         .ok();
     } else {
         sqlx::query(
-            "UPDATE sessions SET last_event_at = ?, status = ? WHERE id = ?",
+            "UPDATE sessions SET last_event_at = ?, status = ?, waiting_tool = ? WHERE id = ?",
         )
         .bind(&now)
         .bind(status)
+        .bind(waiting_tool)
         .bind(&session_id)
         .execute(&state.db)
         .await
