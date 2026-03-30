@@ -67,6 +67,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/todos/{id}/done", post(complete_todo))
         .route("/api/todos/{id}/toggle", post(toggle_todo))
         .route("/api/sessions/{id}", delete(delete_session).post(update_session))
+        .route("/api/sessions/{id}/to-todo", post(session_to_todo))
         .route("/api/cards/move", post(move_card))
         .route("/api/settings/{key}", get(get_setting).post(set_setting))
         .route("/api/database", delete(delete_database))
@@ -106,6 +107,7 @@ struct SessionView {
     title: String,
     cwd: String,
     model: String,
+    status: String,
     last_event_at: String,
     card_class: &'static str,
     badge_class: &'static str,
@@ -151,6 +153,7 @@ impl From<Session> for SessionView {
             title: s.title,
             cwd: s.cwd,
             model: s.model,
+            status: s.status,
             last_event_at: s.last_event_at,
             card_class,
             badge_class,
@@ -256,17 +259,31 @@ fn render_session_card(html: &mut String, s: &SessionView, prefixed: &str, _has_
         concat!(
             r#"<div class="card-item" data-card-id="{prefixed}">"#,
             r#"<div class="rounded-xl p-4 border shadow-sm relative {card_class}">"#,
-            r#"<button class="absolute top-2 right-2 w-6 h-6 flex items-center justify-center rounded-full hover:bg-red-100 text-gray-400 hover:text-red-500 text-sm transition-colors" hx-delete="/api/sessions/{id}" hx-swap="none">&#x2715;</button>"#,
-            r#"<div class="flex gap-2 pr-6">"#,
-            r#"<div class="flex flex-col items-center pt-0.5">"#,
-            r#"<span class="drag-handle cursor-grab text-gray-300 hover:text-gray-500 select-none">&#x2630;</span>"#,
-            r#"</div>"#,
-            r#"<div class="flex-1 min-w-0">"#,
+            r#"<div class="absolute top-2 right-2 flex gap-1">"#,
         ),
         prefixed = prefixed,
         card_class = s.card_class,
+    );
+    if s.status == "ended" {
+        let _ = write!(
+            html,
+            r#"<button class="px-2 py-0.5 rounded-full hover:bg-white text-gray-400 hover:text-gray-500 text-xs transition-colors" hx-post="/api/sessions/{id}/to-todo" hx-swap="none">todoize</button>"#,
+            id = s.id,
+        );
+    }
+    let _ = write!(
+        html,
+        r#"<button class="w-6 h-6 flex items-center justify-center rounded-full hover:bg-red-100 text-gray-400 hover:text-red-500 text-sm transition-colors" hx-delete="/api/sessions/{id}" hx-swap="none">&#x2715;</button>"#,
         id = s.id,
     );
+    html.push_str("</div>");
+    html.push_str(concat!(
+        r#"<div class="flex gap-2 pr-6">"#,
+        r#"<div class="flex flex-col items-center pt-0.5">"#,
+        r#"<span class="drag-handle cursor-grab text-gray-300 hover:text-gray-500 select-none">&#x2630;</span>"#,
+        r#"</div>"#,
+        r#"<div class="flex-1 min-w-0">"#,
+    ));
     if !s.title.is_empty() {
         let _ = write!(html, r#"<p class="text-sm font-medium mb-1 truncate">{}</p>"#, html_escape(&s.title));
     }
@@ -666,6 +683,83 @@ async fn delete_session(
         .execute(&state.db)
         .await
         .ok();
+    let _ = state.events_tx.send(AppEvent::SessionUpdated);
+    let _ = state.events_tx.send(AppEvent::TodoUpdated);
+    StatusCode::OK
+}
+
+async fn session_to_todo(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    // Fetch the session
+    let session: Option<Session> = sqlx::query_as("SELECT * FROM sessions WHERE id = ?")
+        .bind(&id)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten();
+    let session = match session {
+        Some(s) if s.status == "ended" => s,
+        _ => return StatusCode::NOT_FOUND,
+    };
+
+    // Build todo text and note from session info
+    let text = if session.title.is_empty() {
+        session.cwd.rsplit('/').next().unwrap_or(&session.cwd).to_string()
+    } else {
+        session.title.clone()
+    };
+    let note = format!("From session in {}", session.cwd);
+
+    // Create the todo with the same parent as the session
+    let todo: Option<Todo> = sqlx::query_as(
+        "INSERT INTO todos (text, note, sort_order, created_by_session, parent_type, parent_id) VALUES (?, ?, ?, ?, ?, ?) RETURNING *",
+    )
+    .bind(&text)
+    .bind(&note)
+    .bind(session.sort_order)
+    .bind(&session.id)
+    .bind(&session.parent_type)
+    .bind(&session.parent_id)
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten();
+
+    let todo = match todo {
+        Some(t) => t,
+        None => return StatusCode::INTERNAL_SERVER_ERROR,
+    };
+
+    let todo_id_str = todo.id.to_string();
+
+    // Transfer all children from the session to the new todo
+    sqlx::query("UPDATE todos SET parent_type = 'todo', parent_id = ? WHERE parent_type = 'session' AND parent_id = ?")
+        .bind(&todo_id_str)
+        .bind(&id)
+        .execute(&state.db)
+        .await
+        .ok();
+    sqlx::query("UPDATE sessions SET parent_type = 'todo', parent_id = ? WHERE parent_type = 'session' AND parent_id = ?")
+        .bind(&todo_id_str)
+        .bind(&id)
+        .execute(&state.db)
+        .await
+        .ok();
+
+    // Delete the session's events and the session itself
+    sqlx::query("DELETE FROM events WHERE session_id = ?")
+        .bind(&id)
+        .execute(&state.db)
+        .await
+        .ok();
+    sqlx::query("DELETE FROM sessions WHERE id = ?")
+        .bind(&id)
+        .execute(&state.db)
+        .await
+        .ok();
+
     let _ = state.events_tx.send(AppEvent::SessionUpdated);
     let _ = state.events_tx.send(AppEvent::TodoUpdated);
     StatusCode::OK
