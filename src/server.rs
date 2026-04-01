@@ -545,6 +545,14 @@ async fn handle_hook(
     // sessions from events that fire during VSCode startup/shutdown.
     let creates_session = event_type == "SessionStart" || event_type == "UserPromptSubmit";
 
+    // Fetch previous status to detect transitions.
+    let prev_status: Option<String> = sqlx::query_scalar("SELECT status FROM sessions WHERE id = ?")
+        .bind(&session_id)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten();
+
     if status == "ended" {
         sqlx::query(
             "UPDATE sessions SET last_event_at = ?, status = ?, ended_at = ?, waiting_tool = NULL WHERE id = ?",
@@ -585,6 +593,14 @@ async fn handle_hook(
         .execute(&state.db)
         .await
         .ok();
+    }
+
+    // Play a sound on status transitions.
+    let changed = prev_status.as_deref() != Some(status);
+    if changed && status == "ended" {
+        crate::sound::play_ended();
+    } else if changed && status == "waiting" {
+        crate::sound::play_waiting();
     }
 
     if event_type == "UserPromptSubmit" {
