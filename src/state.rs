@@ -5,6 +5,7 @@ use tokio::sync::broadcast;
 pub enum AppEvent {
     SessionUpdated,
     TodoUpdated,
+    Sound(&'static str),
 }
 
 #[derive(Clone)]
