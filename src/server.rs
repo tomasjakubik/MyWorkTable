@@ -483,10 +483,14 @@ async fn sse_events(
         loop {
             match rx.recv().await {
                 Ok(event) => {
-                    let name = match event {
-                        AppEvent::SessionUpdated | AppEvent::TodoUpdated => "cards",
-                    };
-                    yield Ok(Event::default().event(name).data("updated"));
+                    match event {
+                        AppEvent::SessionUpdated | AppEvent::TodoUpdated => {
+                            yield Ok(Event::default().event("cards").data("updated"));
+                        }
+                        AppEvent::Sound(kind) => {
+                            yield Ok(Event::default().event("sound").data(kind));
+                        }
+                    }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                     yield Ok(Event::default().event("session").data("updated"));
@@ -584,7 +588,7 @@ async fn handle_hook(
         .ok();
     } else {
         sqlx::query(
-            "UPDATE sessions SET last_event_at = ?, status = ?, waiting_tool = ? WHERE id = ?",
+            "UPDATE sessions SET last_event_at = ?, status = ?, waiting_tool = ? WHERE id = ? AND status != 'ended'",
         )
         .bind(&now)
         .bind(status)
@@ -595,12 +599,29 @@ async fn handle_hook(
         .ok();
     }
 
-    // Play a sound on status transitions.
+    // Notify browser to play a sound on status transitions.
     let changed = prev_status.as_deref() != Some(status);
     if changed && status == "ended" {
-        crate::sound::play_ended();
+        // Delay the "ended" sound — subagents ending can briefly flip the
+        // parent session to ended before it resumes.  Re-check after 3 s.
+        let db = state.db.clone();
+        let tx = state.events_tx.clone();
+        let sid = session_id.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            let still_ended: Option<String> =
+                sqlx::query_scalar("SELECT status FROM sessions WHERE id = ?")
+                    .bind(&sid)
+                    .fetch_optional(&db)
+                    .await
+                    .ok()
+                    .flatten();
+            if still_ended.as_deref() == Some("ended") {
+                tx.send(AppEvent::Sound("ended")).ok();
+            }
+        });
     } else if changed && status == "waiting" {
-        crate::sound::play_waiting();
+        state.events_tx.send(AppEvent::Sound("waiting")).ok();
     }
 
     if event_type == "UserPromptSubmit" {

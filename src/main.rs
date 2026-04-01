@@ -1,7 +1,6 @@
 mod db;
 mod models;
 mod server;
-mod sound;
 mod state;
 mod time;
 

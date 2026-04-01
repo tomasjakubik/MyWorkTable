@@ -23,6 +23,20 @@
     </div>
 
     <script>
+        // Sound notifications — direct EventSource listener (bypasses HTMX)
+        const soundFiles = {
+            ended:  new Audio('/assets/bell_ding.ogg'),
+            waiting: new Audio('/assets/bell_ding_double.ogg'),
+        };
+        const soundSource = new EventSource('/api/events');
+        soundSource.addEventListener('sound', function(e) {
+            const audio = soundFiles[e.data];
+            if (audio) {
+                audio.currentTime = 0;
+                audio.play().catch(() => {});
+            }
+        });
+
         // Zoom: load saved level, Ctrl+/- to change, persist
         let zoomLevel = 1.0;
         fetch('/api/settings/zoom_level')
