@@ -16,6 +16,12 @@ pub struct Session {
     pub parent_id: Option<String>,
     pub sort_order: i64,
     pub waiting_tool: Option<String>,
+    // StatusLine data
+    pub context_used_pct: Option<f64>,
+    pub total_input_tokens: Option<i64>,
+    pub total_output_tokens: Option<i64>,
+    pub cost_usd: Option<f64>,
+    pub git_branch: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
