@@ -1,5 +1,6 @@
 use sqlx::SqlitePool;
 use sqlx::sqlite::SqlitePoolOptions;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::models::{Session, Todo};
@@ -38,11 +39,15 @@ pub async fn init_db() -> SqlitePool {
     }
 
     // Run incremental migrations (ALTER TABLE fails silently if already applied)
-    let migration_002 = include_str!("../migrations/002_waiting_tool.sql");
-    for statement in migration_002.split(';') {
-        let trimmed = statement.trim();
-        if !trimmed.is_empty() {
-            sqlx::query(trimmed).execute(&pool).await.ok();
+    for migration in [
+        include_str!("../migrations/002_waiting_tool.sql"),
+        include_str!("../migrations/003_observer_features.sql"),
+    ] {
+        for statement in migration.split(';') {
+            let trimmed = statement.trim();
+            if !trimmed.is_empty() {
+                sqlx::query(trimmed).execute(&pool).await.ok();
+            }
         }
     }
 
@@ -63,7 +68,21 @@ pub async fn get_todos(pool: &SqlitePool) -> Vec<Todo> {
         .unwrap_or_default()
 }
 
+/// Returns (done_count, total_count) per session_id.
+pub async fn get_task_counts(pool: &SqlitePool) -> HashMap<String, (i64, i64)> {
+    sqlx::query_as::<_, (String, i64, i64)>(
+        "SELECT session_id, SUM(status = 'done'), COUNT(*) FROM session_tasks GROUP BY session_id",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .map(|(sid, done, total)| (sid, (done, total)))
+    .collect()
+}
+
 pub async fn delete_all_data(pool: &SqlitePool) {
+    sqlx::query("DELETE FROM session_tasks").execute(pool).await.ok();
     sqlx::query("DELETE FROM events").execute(pool).await.ok();
     sqlx::query("DELETE FROM todos").execute(pool).await.ok();
     sqlx::query("DELETE FROM sessions").execute(pool).await.ok();

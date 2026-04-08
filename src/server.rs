@@ -114,37 +114,58 @@ struct SessionView {
     status_label: String,
     dir_name: String,
     rel_time: String,
+    // New fields
+    context_used_pct: Option<f64>,
+    cost_usd: Option<f64>,
+    git_branch: Option<String>,
+    task_done: i64,
+    task_total: i64,
 }
 
-impl From<Session> for SessionView {
-    fn from(s: Session) -> Self {
-        let (card_class, badge_class, status_label) = match s.status.as_str() {
-            "active" => (
-                "bg-amber-50 border-amber-200 text-amber-900",
-                "bg-amber-200 text-amber-700",
-                "working".to_string(),
-            ),
-            "waiting" => {
-                let label = match &s.waiting_tool {
-                    Some(tool) if !tool.is_empty() => format!("approve {tool}"),
-                    _ => "waiting for approval".to_string(),
-                };
-                (
-                    "bg-blue-50 border-blue-200 text-blue-900",
-                    "bg-blue-200 text-blue-700",
-                    label,
-                )
+impl SessionView {
+    fn new(s: Session, task_done: i64, task_total: i64) -> Self {
+        // Stale detection: active for >10 min without events
+        let is_stale = s.status == "active" && {
+            chrono::DateTime::parse_from_rfc3339(&s.last_event_at)
+                .map(|dt| chrono::Utc::now().signed_duration_since(dt).num_minutes() > 10)
+                .unwrap_or(false)
+        };
+
+        let (card_class, badge_class, status_label) = if is_stale {
+            (
+                "bg-gray-50 border-gray-300 text-gray-600",
+                "bg-gray-300 text-gray-600",
+                "stale?".to_string(),
+            )
+        } else {
+            match s.status.as_str() {
+                "active" => (
+                    "bg-amber-50 border-amber-200 text-amber-900",
+                    "bg-amber-200 text-amber-700",
+                    "working".to_string(),
+                ),
+                "waiting" => {
+                    let label = match &s.waiting_tool {
+                        Some(tool) if !tool.is_empty() => format!("approve {tool}"),
+                        _ => "waiting for approval".to_string(),
+                    };
+                    (
+                        "bg-blue-50 border-blue-200 text-blue-900",
+                        "bg-blue-200 text-blue-700",
+                        label,
+                    )
+                }
+                "ended" => (
+                    "bg-green-50 border-green-200 text-green-900",
+                    "bg-green-200 text-green-700",
+                    "ended".to_string(),
+                ),
+                _ => (
+                    "bg-gray-50 border-gray-200 text-gray-700",
+                    "bg-gray-200 text-gray-600",
+                    "unknown".to_string(),
+                ),
             }
-            "ended" => (
-                "bg-green-50 border-green-200 text-green-900",
-                "bg-green-200 text-green-700",
-                "ended".to_string(),
-            ),
-            _ => (
-                "bg-gray-50 border-gray-200 text-gray-700",
-                "bg-gray-200 text-gray-600",
-                "unknown".to_string(),
-            ),
         };
         let dir_name = s.cwd.rsplit('/').next().unwrap_or(&s.cwd).to_string();
         let rel_time = relative_time(&s.last_event_at);
@@ -160,6 +181,11 @@ impl From<Session> for SessionView {
             status_label,
             dir_name,
             rel_time,
+            context_used_pct: s.context_used_pct,
+            cost_usd: s.cost_usd,
+            git_branch: s.git_branch,
+            task_done,
+            task_total,
         }
     }
 }
@@ -188,14 +214,81 @@ impl From<Todo> for TodoView {
 
 // --- Card tree rendering ---
 
+fn format_reset_time(iso_str: &str) -> String {
+    match chrono::DateTime::parse_from_rfc3339(iso_str) {
+        Ok(dt) => {
+            let local = dt.with_timezone(&chrono::Local);
+            let now = chrono::Local::now();
+            if local.date_naive() == now.date_naive() {
+                local.format("%H:%M").to_string()
+            } else {
+                local.format("%a %H:%M").to_string()
+            }
+        }
+        Err(_) => "?".to_string(),
+    }
+}
+
+async fn render_rate_limit_header(html: &mut String, db: &sqlx::SqlitePool) {
+    let rate_5h_pct: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'rate_5h_pct'")
+        .fetch_optional(db).await.ok().flatten();
+    let rate_5h_resets: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'rate_5h_resets'")
+        .fetch_optional(db).await.ok().flatten();
+    let rate_7d_pct: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'rate_7d_pct'")
+        .fetch_optional(db).await.ok().flatten();
+    let rate_7d_resets: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'rate_7d_resets'")
+        .fetch_optional(db).await.ok().flatten();
+
+    if rate_5h_pct.is_none() && rate_7d_pct.is_none() {
+        return;
+    }
+
+    html.push_str(r#"<div style="margin-bottom:0.75rem;display:flex;gap:2rem;align-items:center;font-size:0.75rem;color:#9ca3af">"#);
+
+    for (label, pct_opt, reset_opt) in [
+        ("5h", &rate_5h_pct, &rate_5h_resets),
+        ("7d", &rate_7d_pct, &rate_7d_resets),
+    ] {
+        if let Some(pct_str) = pct_opt {
+            let pct: f64 = pct_str.parse().unwrap_or(0.0);
+            // Hue: 210 (blue) at 0% → 0 (red) at 75%+
+            let hue = if pct >= 75.0 { 0 } else { (210.0 * (1.0 - pct / 75.0)) as i32 };
+            let reset = reset_opt.as_ref()
+                .map(|s| format_reset_time(s))
+                .unwrap_or_default();
+            let _ = write!(html, concat!(
+                r#"<div style="display:flex;align-items:center;gap:0.5rem">"#,
+                r#"<span style="color:#6b7280;font-weight:500">{label}</span>"#,
+                r#"<div style="width:8rem;height:0.625rem;background:#374151;border-radius:9999px;overflow:hidden">"#,
+                r#"<div style="width:{pct:.0}%;height:100%;border-radius:9999px;background:hsl({hue},70%,55%);transition:width 0.3s"></div>"#,
+                r#"</div>"#,
+                r#"<span style="font-variant-numeric:tabular-nums">{pct:.0}%</span>"#,
+            ), label = label, pct = pct, hue = hue);
+            if !reset.is_empty() {
+                let _ = write!(html,
+                    r#"<span style="color:#6b7280">resets {reset}</span>"#,
+                    reset = html_escape(&reset),
+                );
+            }
+            html.push_str("</div>");
+        }
+    }
+
+    html.push_str("</div>");
+}
+
 async fn html_cards(State(state): State<AppState>) -> Html<String> {
     let sessions = db::get_sessions(&state.db).await;
     let todos = db::get_todos(&state.db).await;
+    let task_counts = db::get_task_counts(&state.db).await;
 
     let session_views: HashMap<String, SessionView> = sessions
         .iter()
         .cloned()
-        .map(|s| (s.id.clone(), SessionView::from(s)))
+        .map(|s| {
+            let (done, total) = task_counts.get(&s.id).copied().unwrap_or((0, 0));
+            (s.id.clone(), SessionView::new(s, done, total))
+        })
         .collect();
     let todo_views: HashMap<i64, TodoView> = todos
         .iter()
@@ -209,6 +302,9 @@ async fn html_cards(State(state): State<AppState>) -> Html<String> {
 
     // New todo input
     html.push_str(r#"<div class="mb-4 flex gap-2"><input id="new-todo-input" class="flex-1 bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors" placeholder="Add a todo..."><button class="bg-gray-700 hover:bg-red-600 text-gray-300 hover:text-white text-xs px-3 py-2 rounded-lg border border-gray-600 hover:border-red-500 transition-colors flex-shrink-0" onclick="handleClearAll(this)" data-confirmed="false">Clear all</button></div>"#);
+
+    // Rate limit header
+    render_rate_limit_header(&mut html, &state.db).await;
 
     // Root card list
     html.push_str(r#"<div id="card-list" class="card-children" style="display:flex;flex-direction:column;gap:0.5rem" data-parent="root">"#);
@@ -287,25 +383,64 @@ fn render_session_card(html: &mut String, s: &SessionView, prefixed: &str, _has_
     if !s.title.is_empty() {
         let _ = write!(html, r#"<p class="text-sm font-medium mb-1 truncate">{}</p>"#, html_escape(&s.title));
     }
+    // Dir name + git branch + status badge
     let _ = write!(
         html,
-        r#"<div class="flex items-center justify-between mb-1"><span class="{name_class} truncate">{dir_name}</span><span class="text-xs px-2 py-0.5 rounded-full flex-shrink-0 {badge_class}">{status_label}</span></div>"#,
+        r#"<div class="flex items-center justify-between mb-1"><span class="{name_class} truncate">{dir_name}"#,
         name_class = if !s.title.is_empty() { "text-xs opacity-60" } else { "font-medium text-sm" },
         dir_name = html_escape(&s.dir_name),
+    );
+    if let Some(ref branch) = s.git_branch {
+        let _ = write!(html, r#" <span style="opacity:0.8;font-weight:600">{branch}</span>"#, branch = html_escape(branch));
+    }
+    if s.cwd.len() > s.dir_name.len() {
+        let _ = write!(html, r#" <span class="opacity-40">{}</span>"#, html_escape(&s.cwd));
+    }
+    let _ = write!(
+        html,
+        r#"</span><span class="text-xs px-2 py-0.5 rounded-full flex-shrink-0 {badge_class}">{status_label}</span></div>"#,
         badge_class = s.badge_class,
         status_label = s.status_label,
     );
+    // Metadata line: time, model, cost, tasks
     let _ = write!(
         html,
-        r#"<div class="flex items-center gap-2"><span class="text-xs opacity-60" title="{last_event_at}">{rel_time}</span>"#,
+        r#"<div class="flex items-center gap-2 flex-wrap"><span class="text-xs opacity-60" title="{last_event_at}">{rel_time}</span>"#,
         last_event_at = html_escape(&s.last_event_at),
         rel_time = html_escape(&s.rel_time),
     );
     if !s.model.is_empty() {
         let _ = write!(html, r#"<span class="text-xs opacity-40">{}</span>"#, html_escape(&s.model));
     }
+    if let Some(cost) = s.cost_usd {
+        if cost > 0.0 {
+            let _ = write!(html, r#"<span class="text-xs opacity-40">${cost:.2}</span>"#, cost = cost);
+        }
+    }
+    // Context bar (inline, only if data exists)
+    if let Some(pct) = s.context_used_pct {
+        let hue = if pct >= 75.0 { 0 } else { (210.0 * (1.0 - pct / 75.0)) as i32 };
+        let _ = write!(
+            html,
+            concat!(
+                r#"<span style="display:inline-flex;align-items:center;gap:0.25rem">"#,
+                r#"<span style="display:inline-block;width:3rem;height:0.375rem;background:rgba(0,0,0,0.1);border-radius:9999px;overflow:hidden;vertical-align:middle">"#,
+                r#"<span style="display:block;width:{pct:.0}%;height:100%;border-radius:9999px;background:hsl({hue},70%,55%)"></span>"#,
+                r#"</span>"#,
+                r#"<span class="text-xs" style="opacity:0.4">{pct:.0}%</span>"#,
+                r#"</span>"#,
+            ),
+            pct = pct, hue = hue,
+        );
+    }
+    if s.task_total > 0 {
+        let _ = write!(
+            html,
+            r#"<span class="text-xs opacity-40">{done}/{total} tasks</span>"#,
+            done = s.task_done, total = s.task_total,
+        );
+    }
     html.push_str("</div>");
-    let _ = write!(html, r#"<div class="text-xs opacity-40 truncate mt-1">{}</div>"#, html_escape(&s.cwd));
     html.push_str("</div></div></div>"); // close flex-1, flex gap-2, rounded card
 }
 
@@ -480,23 +615,32 @@ async fn sse_events(
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let mut rx = state.events_tx.subscribe();
     let stream = async_stream::stream! {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
+        ticker.tick().await; // consume the immediate first tick
         loop {
-            match rx.recv().await {
-                Ok(event) => {
-                    match event {
-                        AppEvent::SessionUpdated | AppEvent::TodoUpdated => {
+            tokio::select! {
+                result = rx.recv() => {
+                    match result {
+                        Ok(event) => {
+                            match event {
+                                AppEvent::SessionUpdated | AppEvent::TodoUpdated => {
+                                    yield Ok(Event::default().event("cards").data("updated"));
+                                }
+                                AppEvent::Sound(kind) => {
+                                    yield Ok(Event::default().event("sound").data(kind));
+                                }
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                             yield Ok(Event::default().event("cards").data("updated"));
                         }
-                        AppEvent::Sound(kind) => {
-                            yield Ok(Event::default().event("sound").data(kind));
-                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     }
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                    yield Ok(Event::default().event("session").data("updated"));
-                    yield Ok(Event::default().event("todo").data("updated"));
+                _ = ticker.tick() => {
+                    // Periodic refresh for stale detection
+                    yield Ok(Event::default().event("cards").data("updated"));
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
         }
     };
@@ -504,6 +648,16 @@ async fn sse_events(
 }
 
 // --- Hooks ---
+
+pub async fn upsert_setting(db: &sqlx::SqlitePool, key: &str, value: &str) {
+    sqlx::query("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?")
+        .bind(key)
+        .bind(value)
+        .bind(value)
+        .execute(db)
+        .await
+        .ok();
+}
 
 #[derive(Debug, Deserialize)]
 struct HookPayload {
@@ -528,9 +682,9 @@ async fn handle_hook(
     let model = payload.model.unwrap_or_default();
     let now = chrono::Utc::now().to_rfc3339();
 
-    let status = if event_type.contains("Stop") || event_type.contains("End") {
+    let status = if event_type == "Stop" || event_type == "SessionEnd" {
         "ended"
-    } else if event_type.contains("PermissionRequest") {
+    } else if event_type == "PermissionRequest" {
         "waiting"
     } else {
         "active"
@@ -648,6 +802,52 @@ async fn handle_hook(
             .ok();
     }
 
+    // CwdChanged: update session working directory
+    if event_type == "CwdChanged" && cwd != "." {
+        sqlx::query("UPDATE sessions SET cwd = ? WHERE id = ?")
+            .bind(&cwd)
+            .bind(&session_id)
+            .execute(&state.db)
+            .await
+            .ok();
+    }
+
+    // TaskCreated / TaskCompleted: track Claude's internal tasks
+    if event_type == "TaskCreated" || event_type == "TaskCompleted" {
+        if let Some(task) = payload.extra.get("task") {
+            // id can be string or number
+            let tid = task.get("id").and_then(|v| {
+                v.as_str()
+                    .map(|s| s.to_string())
+                    .or_else(|| v.as_i64().map(|n| n.to_string()))
+            });
+            if let Some(tid) = tid {
+                let subject = task.get("subject").and_then(|v| v.as_str()).unwrap_or("");
+                if event_type == "TaskCreated" {
+                    sqlx::query(
+                        "INSERT INTO session_tasks (id, session_id, subject, status) VALUES (?, ?, ?, 'pending') ON CONFLICT(id, session_id) DO UPDATE SET subject = ?",
+                    )
+                    .bind(&tid)
+                    .bind(&session_id)
+                    .bind(subject)
+                    .bind(subject)
+                    .execute(&state.db)
+                    .await
+                    .ok();
+                } else {
+                    sqlx::query(
+                        "UPDATE session_tasks SET status = 'done' WHERE id = ? AND session_id = ?",
+                    )
+                    .bind(&tid)
+                    .bind(&session_id)
+                    .execute(&state.db)
+                    .await
+                    .ok();
+                }
+            }
+        }
+    }
+
     let metadata = serde_json::to_string(&payload.extra).ok();
     sqlx::query(
         "INSERT INTO events (session_id, event_type, tool_name, timestamp, metadata)
@@ -710,6 +910,11 @@ async fn delete_session(
         .await
         .ok();
 
+    sqlx::query("DELETE FROM session_tasks WHERE session_id = ?")
+        .bind(&id)
+        .execute(&state.db)
+        .await
+        .ok();
     sqlx::query("DELETE FROM events WHERE session_id = ?")
         .bind(&id)
         .execute(&state.db)
@@ -785,7 +990,12 @@ async fn session_to_todo(
         .await
         .ok();
 
-    // Delete the session's events and the session itself
+    // Delete the session's tasks, events, and the session itself
+    sqlx::query("DELETE FROM session_tasks WHERE session_id = ?")
+        .bind(&id)
+        .execute(&state.db)
+        .await
+        .ok();
     sqlx::query("DELETE FROM events WHERE session_id = ?")
         .bind(&id)
         .execute(&state.db)
