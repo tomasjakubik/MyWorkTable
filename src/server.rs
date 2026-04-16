@@ -350,16 +350,85 @@ fn render_card_list(
 }
 
 fn render_session_card(html: &mut String, s: &SessionView, prefixed: &str, _has_children: bool) {
+    let dir_class = if !s.title.is_empty() { "text-xs opacity-60" } else { "font-medium text-sm" };
     let _ = write!(
         html,
         concat!(
             r#"<div class="card-item" data-card-id="{prefixed}">"#,
-            r#"<div class="rounded-xl p-4 border shadow-sm relative {card_class}">"#,
-            r#"<div class="absolute top-2 right-2 flex gap-1">"#,
+            r#"<div class="rounded-xl px-3 py-1.5 border shadow-sm {card_class}">"#,
+            r#"<div class="flex items-start gap-2">"#,
+            r#"<span class="drag-handle cursor-grab text-gray-300 hover:text-gray-500 select-none">&#x2630;</span>"#,
+            r#"<div class="flex-1 min-w-0">"#,
         ),
         prefixed = prefixed,
         card_class = s.card_class,
     );
+    if !s.title.is_empty() {
+        let _ = write!(html, r#"<p class="text-sm font-medium mb-0.5 truncate">{}</p>"#, html_escape(&s.title));
+    }
+    // Details line: status data (flex-wrap) + context bar + status badge
+    html.push_str(r#"<div class="flex items-center gap-2"><div class="flex items-center gap-2 flex-wrap flex-1 min-w-0 text-xs">"#);
+    let _ = write!(
+        html,
+        r#"<span class="{dir_class}">{dir_name}</span>"#,
+        dir_class = dir_class,
+        dir_name = html_escape(&s.dir_name),
+    );
+    if let Some(ref branch) = s.git_branch {
+        let _ = write!(html, r#"<span style="opacity:0.8;font-weight:600">{branch}</span>"#, branch = html_escape(branch));
+    }
+    if s.cwd.len() > s.dir_name.len() {
+        let _ = write!(html, r#"<span class="opacity-40">{}</span>"#, html_escape(&s.cwd));
+    }
+    let _ = write!(
+        html,
+        r#"<span class="opacity-60" title="{last_event_at}">{rel_time}</span>"#,
+        last_event_at = html_escape(&s.last_event_at),
+        rel_time = html_escape(&s.rel_time),
+    );
+    if !s.model.is_empty() {
+        let _ = write!(html, r#"<span class="opacity-40">{}</span>"#, html_escape(&s.model));
+    }
+    if let Some(cost) = s.cost_usd {
+        if cost > 0.0 {
+            let _ = write!(html, r#"<span class="opacity-40">${cost:.2}</span>"#, cost = cost);
+        }
+    }
+    if s.task_total > 0 {
+        let _ = write!(
+            html,
+            r#"<span class="opacity-40">{done}/{total} tasks</span>"#,
+            done = s.task_done, total = s.task_total,
+        );
+    }
+    html.push_str("</div>"); // close status-data flex
+    // Context bar (only if data exists) — sits between status data and status badge
+    if let Some(pct) = s.context_used_pct {
+        let hue = if pct >= 75.0 { 0 } else { (210.0 * (1.0 - pct / 75.0)) as i32 };
+        let _ = write!(
+            html,
+            concat!(
+                r#"<span class="flex items-center gap-1 flex-shrink-0 text-xs">"#,
+                r#"<span style="display:inline-block;width:3rem;height:0.375rem;background:rgba(0,0,0,0.1);border-radius:9999px;overflow:hidden">"#,
+                r#"<span style="display:block;width:{pct:.0}%;height:100%;border-radius:9999px;background:hsl({hue},70%,55%)"></span>"#,
+                r#"</span>"#,
+                r#"<span class="opacity-40">{pct:.0}%</span>"#,
+                r#"</span>"#,
+            ),
+            pct = pct, hue = hue,
+        );
+    }
+    // Status badge on the right
+    let _ = write!(
+        html,
+        r#"<span class="text-xs px-2 py-0.5 rounded-full flex-shrink-0 {badge_class}">{status_label}</span>"#,
+        badge_class = s.badge_class,
+        status_label = s.status_label,
+    );
+    html.push_str("</div>"); // close details flex row
+    html.push_str("</div>"); // close flex-1 body
+    // Right-side button group: optional todoize + delete
+    html.push_str(r#"<div class="flex gap-1 flex-shrink-0">"#);
     if s.status == "ended" {
         let _ = write!(
             html,
@@ -373,130 +442,71 @@ fn render_session_card(html: &mut String, s: &SessionView, prefixed: &str, _has_
         id = s.id,
     );
     html.push_str("</div>");
-    html.push_str(concat!(
-        r#"<div class="flex gap-2 pr-6">"#,
-        r#"<div class="flex flex-col items-center pt-0.5">"#,
-        r#"<span class="drag-handle cursor-grab text-gray-300 hover:text-gray-500 select-none">&#x2630;</span>"#,
-        r#"</div>"#,
-        r#"<div class="flex-1 min-w-0">"#,
-    ));
-    if !s.title.is_empty() {
-        let _ = write!(html, r#"<p class="text-sm font-medium mb-1 truncate">{}</p>"#, html_escape(&s.title));
-    }
-    // Dir name + git branch + status badge
-    let _ = write!(
-        html,
-        r#"<div class="flex items-center justify-between mb-1"><span class="{name_class} truncate">{dir_name}"#,
-        name_class = if !s.title.is_empty() { "text-xs opacity-60" } else { "font-medium text-sm" },
-        dir_name = html_escape(&s.dir_name),
-    );
-    if let Some(ref branch) = s.git_branch {
-        let _ = write!(html, r#" <span style="opacity:0.8;font-weight:600">{branch}</span>"#, branch = html_escape(branch));
-    }
-    if s.cwd.len() > s.dir_name.len() {
-        let _ = write!(html, r#" <span class="opacity-40">{}</span>"#, html_escape(&s.cwd));
-    }
-    let _ = write!(
-        html,
-        r#"</span><span class="text-xs px-2 py-0.5 rounded-full flex-shrink-0 {badge_class}">{status_label}</span></div>"#,
-        badge_class = s.badge_class,
-        status_label = s.status_label,
-    );
-    // Metadata line: time, model, cost, tasks
-    let _ = write!(
-        html,
-        r#"<div class="flex items-center gap-2 flex-wrap"><span class="text-xs opacity-60" title="{last_event_at}">{rel_time}</span>"#,
-        last_event_at = html_escape(&s.last_event_at),
-        rel_time = html_escape(&s.rel_time),
-    );
-    if !s.model.is_empty() {
-        let _ = write!(html, r#"<span class="text-xs opacity-40">{}</span>"#, html_escape(&s.model));
-    }
-    if let Some(cost) = s.cost_usd {
-        if cost > 0.0 {
-            let _ = write!(html, r#"<span class="text-xs opacity-40">${cost:.2}</span>"#, cost = cost);
-        }
-    }
-    // Context bar (inline, only if data exists)
-    if let Some(pct) = s.context_used_pct {
-        let hue = if pct >= 75.0 { 0 } else { (210.0 * (1.0 - pct / 75.0)) as i32 };
-        let _ = write!(
-            html,
-            concat!(
-                r#"<span style="display:inline-flex;align-items:center;gap:0.25rem">"#,
-                r#"<span style="display:inline-block;width:3rem;height:0.375rem;background:rgba(0,0,0,0.1);border-radius:9999px;overflow:hidden;vertical-align:middle">"#,
-                r#"<span style="display:block;width:{pct:.0}%;height:100%;border-radius:9999px;background:hsl({hue},70%,55%)"></span>"#,
-                r#"</span>"#,
-                r#"<span class="text-xs" style="opacity:0.4">{pct:.0}%</span>"#,
-                r#"</span>"#,
-            ),
-            pct = pct, hue = hue,
-        );
-    }
-    if s.task_total > 0 {
-        let _ = write!(
-            html,
-            r#"<span class="text-xs opacity-40">{done}/{total} tasks</span>"#,
-            done = s.task_done, total = s.task_total,
-        );
-    }
-    html.push_str("</div>");
-    html.push_str("</div></div></div>"); // close flex-1, flex gap-2, rounded card
+    html.push_str("</div></div>"); // close outer flex, card (card-item closed by render_card_list)
 }
 
 fn render_todo_card(html: &mut String, t: &TodoView, prefixed: &str, _has_children: bool) {
     let card_class = if t.is_done {
-        "rounded-xl p-3 border bg-gray-100 border-gray-300 opacity-60"
+        "rounded-xl px-3 py-1.5 border bg-gray-100 border-gray-300 opacity-60"
     } else {
-        "rounded-xl p-3 border bg-white border-gray-200 shadow-sm hover:shadow-md transition-shadow"
+        "rounded-xl px-3 py-1.5 border bg-white border-gray-200 shadow-sm hover:shadow-md transition-shadow"
     };
     let check_class = if t.is_done {
         "bg-green-500 border-green-500 text-white"
     } else {
         "border-gray-400 hover:border-gray-500"
     };
+    let text_class = if t.is_done { "text-gray-400 line-through" } else { "text-gray-800" };
+
     let _ = write!(
         html,
         concat!(
             r#"<div class="card-item" data-card-id="{prefixed}">"#,
-            r#"<div class="{card_class} relative">"#,
-            r#"<button class="absolute top-2 right-2 w-6 h-6 flex items-center justify-center rounded-full hover:bg-red-100 text-gray-400 hover:text-red-500 text-sm transition-colors" hx-delete="/api/todos/{id}" hx-swap="none">&#x2715;</button>"#,
-            r#"<div class="flex gap-2 pr-6">"#,
-            r#"<div class="flex flex-col items-center pt-0.5" style="gap:0.25rem">"#,
+            r#"<div class="{card_class}">"#,
+            r#"<div class="flex items-start gap-2">"#,
             r#"<span class="drag-handle cursor-grab text-gray-300 hover:text-gray-500 select-none">&#x2630;</span>"#,
-            r#"<span class="text-xs text-gray-400 font-mono leading-none">#{id}</span>"#,
-            r#"<button class="w-4 h-4 rounded border flex-shrink-0 flex items-center justify-center text-xs {check_class}" hx-post="/api/todos/{id}/toggle" hx-swap="none">"#,
+            r#"<div class="flex-1 min-w-0">"#,
+            r#"<div class="flex items-baseline gap-2">"#,
+            r#"<span class="text-xs text-gray-400 font-mono flex-shrink-0">#{id}</span>"#,
         ),
         prefixed = prefixed,
         card_class = card_class,
         id = t.id,
-        check_class = check_class,
     );
-    if t.is_done {
-        html.push_str("&#x2713;");
-    }
-    html.push_str(r#"</button></div><div class="flex-1 min-w-0">"#);
 
-    // Text
-    let text_class = if t.is_done { "text-gray-400 line-through" } else { "text-gray-800" };
+    // Text (inline with #id)
     if t.is_done {
         let _ = write!(
             html,
-            r#"<p class="text-sm {text_class}" style="cursor: default">{text}</p>"#,
+            r#"<p class="text-sm {text_class} flex-1 min-w-0 truncate" style="cursor: default">{text}</p>"#,
             text_class = text_class,
             text = html_escape(&t.text),
         );
     } else {
         let _ = write!(
             html,
-            r#"<p class="text-sm {text_class}" hx-get="/html/todo/{id}/edit-text" hx-trigger="dblclick" hx-target="closest div.flex-1" hx-swap="innerHTML" style="cursor: pointer">{text}</p>"#,
+            r#"<p class="text-sm {text_class} flex-1 min-w-0 truncate" hx-get="/html/todo/{id}/edit-text" hx-trigger="dblclick" hx-target="closest div.flex-1" hx-swap="innerHTML" style="cursor: pointer">{text}</p>"#,
             text_class = text_class,
             id = t.id,
             text = html_escape(&t.text),
         );
     }
 
-    // Note
+    // Inline "+ add note" (when no note and not done) — targets the note-slot below so the
+    // edit form opens on its own line instead of cramped in the title row
+    if t.note.is_empty() && !t.is_done {
+        let _ = write!(
+            html,
+            r##"<button class="text-xs text-gray-400 hover:text-gray-500 transition-colors flex-shrink-0" hx-get="/html/todo/{id}/edit-note" hx-trigger="click" hx-target="#note-slot-{id}" hx-swap="innerHTML">+ add note</button>"##,
+            id = t.id,
+        );
+    }
+
+    html.push_str("</div>"); // close items-baseline title row
+
+    // Note slot — contains the note div when a note exists; stays empty otherwise and acts
+    // as the insertion target for the inline "+ add note" button's edit form.
+    let _ = write!(html, r#"<div id="note-slot-{id}">"#, id = t.id);
     if !t.note.is_empty() {
         let note_class = if t.is_done { "text-gray-400" } else { "text-gray-500" };
         if t.is_done {
@@ -515,15 +525,28 @@ fn render_todo_card(html: &mut String, t: &TodoView, prefixed: &str, _has_childr
                 note_html = t.note_html,
             );
         }
-    } else if !t.is_done {
-        let _ = write!(
-            html,
-            r#"<button class="text-xs text-gray-400 hover:text-gray-500 transition-colors mt-1" hx-get="/html/todo/{id}/edit-note" hx-trigger="click" hx-target="this" hx-swap="outerHTML">+ add note</button>"#,
-            id = t.id,
-        );
     }
+    html.push_str("</div>"); // close note-slot
 
-    html.push_str("</div></div></div>"); // close flex-1, flex gap-2, rounded card
+    html.push_str("</div>"); // close flex-1 body
+
+    // Top-right button group: checkmark + delete
+    let _ = write!(
+        html,
+        r#"<div class="flex gap-1 flex-shrink-0"><button class="w-6 h-6 rounded-full border flex items-center justify-center text-xs transition-colors {check_class}" hx-post="/api/todos/{id}/toggle" hx-swap="none">"#,
+        check_class = check_class,
+        id = t.id,
+    );
+    if t.is_done {
+        html.push_str("&#x2713;");
+    }
+    let _ = write!(
+        html,
+        r#"</button><button class="w-6 h-6 flex items-center justify-center rounded-full hover:bg-red-100 text-gray-400 hover:text-red-500 text-sm transition-colors" hx-delete="/api/todos/{id}" hx-swap="none">&#x2715;</button></div>"#,
+        id = t.id,
+    );
+
+    html.push_str("</div></div>"); // close outer flex, card (card-item closed by render_card_list)
 }
 
 /// Strip known context tags and their content from hook input, returning only the

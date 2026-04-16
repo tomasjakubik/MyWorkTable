@@ -94,6 +94,19 @@
             if (isDragging) {
                 e.preventDefault();
                 e.detail.shouldSwap = false;
+                return;
+            }
+            // Suppress cards refresh while user is actively editing
+            var target = e.detail.target;
+            if (target && target.id === 'cards') {
+                var active = document.activeElement;
+                if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA') && target.contains(active)) {
+                    if (active.id === 'new-todo-input' && active.value.trim() === '') {
+                        return; // allow swap -- empty input needs no protection
+                    }
+                    e.preventDefault();
+                    e.detail.shouldSwap = false;
+                }
             }
         });
 
