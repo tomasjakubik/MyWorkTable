@@ -230,6 +230,20 @@ fn format_reset_time(iso_str: &str) -> String {
 }
 
 async fn render_rate_limit_header(html: &mut String, db: &sqlx::SqlitePool) {
+    let rate_error: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'rate_error'")
+        .fetch_optional(db).await.ok().flatten();
+
+    if let Some(err) = rate_error {
+        let _ = write!(html, concat!(
+            r#"<div style="margin-bottom:0.75rem;display:flex;gap:0.5rem;align-items:center;"#,
+            r#"font-size:0.75rem;color:#fca5a5;background:#7f1d1d;"#,
+            r#"padding:0.375rem 0.75rem;border-radius:0.375rem">"#,
+            r#"<span>⚠ Usage data unavailable: {err}</span>"#,
+            r#"</div>"#,
+        ), err = html_escape(&err));
+        return;
+    }
+
     let rate_5h_pct: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'rate_5h_pct'")
         .fetch_optional(db).await.ok().flatten();
     let rate_5h_resets: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'rate_5h_resets'")
@@ -677,6 +691,14 @@ pub async fn upsert_setting(db: &sqlx::SqlitePool, key: &str, value: &str) {
         .bind(key)
         .bind(value)
         .bind(value)
+        .execute(db)
+        .await
+        .ok();
+}
+
+pub async fn delete_setting(db: &sqlx::SqlitePool, key: &str) {
+    sqlx::query("DELETE FROM settings WHERE key = ?")
+        .bind(key)
         .execute(db)
         .await
         .ok();
